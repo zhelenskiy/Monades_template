@@ -67,6 +67,72 @@ constexpr auto reduce_params_types(F &&functor) {
     return [functor](Params... params) { return functor(std::forward<Params>(params)...); };
 }
 
+struct else_return_t {
+} else_return;
+
+template<class F, class V, class = std::enable_if_t<!std::is_same_v<F, else_return_t>>, class... Other>
+auto cond(const F &f, V &&v, Other &&... others) {
+    return f() ? v : cond(std::forward<Other>(others)...);
+}
+
+template<class V>
+constexpr auto cond(else_return_t, V &&v) {
+    return v;
+}
+
+template<auto F, class T, size_t>
+struct cpair_t {
+    T value;
+
+    explicit cpair_t(T value) : value(std::move(value)) {}
+};
+
+
+template<auto F, size_t ind = 0, class T>
+constexpr auto cpair(T &&item) {
+    return cpair_t<F, T, ind>(item);
+}
+
+
+template<auto F, class V, size_t ind, class = std::enable_if_t<!std::is_same_v<decltype(F), else_return_t>>, class... Other>
+constexpr auto constexpr_cond(const cpair_t<F, V, ind> &value, Other &&... others) {
+    if constexpr (F()) {
+        return value.value;
+    } else {
+        return constexpr_cond(std::forward<Other>(others)...);
+    }
+}
+
+template<class V>
+constexpr auto constexpr_cond(else_return_t, V &&f) {
+    return f;
+}
+
+template<class T, class S, class = std::enable_if_t<!std::is_same_v<T, else_return_t>>, class... Other>
+constexpr auto select(const T &item, const T &cur, S &&value, const Other &... others) {
+    return item == cur ? value : select(item, others...);
+}
+
+template<class T, class S>
+constexpr auto select(const T &, else_return_t, S &&value) {
+    return value;
+}
+
+template<auto item, decltype(item) cur, size_t ind, class S, class = std::enable_if_t<!std::is_same_v<decltype(item), else_return_t>>, class... Other>
+constexpr auto constexpr_select(const cpair_t<cur, S, ind> &pair, const Other &... others) {
+    if constexpr (item == cur) {
+        return pair.value;
+    } else {
+        return constexpr_select<item>(others...);
+    }
+}
+
+template<auto T, class S>
+constexpr auto constexpr_select(else_return_t, S &&pair) {
+    return pair;
+}
+
+
 constexpr auto copy = [](auto item) { return item; };
 constexpr auto move = [](auto &&item) { return std::move(item); }; // NOLINT(bugprone-move-forwarding-reference)
 
@@ -99,6 +165,33 @@ constexpr auto rsort(Args &&... args) {
     };
 }
 
+constexpr auto all = [](auto &&...args) {
+    return [=](const auto &... subArgs) { return (args(subArgs...) && ...); };
+};
+
+constexpr auto any = [](auto &&...args) {
+    return [=](const auto &... subArgs) { return (args(subArgs...) || ...); };
+};
+
+constexpr auto not_ = [](auto &&f) {
+    return [f](auto &&... items) { return !f(std::forward<decltype(items)>(items)...); };
+};
+
+constexpr auto not_all = [](auto &&... fs) {
+    return not_(all(std::forward<decltype(fs)>(fs)...));
+};
+
+constexpr auto none = [](auto &&... fs) {
+    return not_(any(std::forward<decltype(fs)>(fs)...));
+};
+
+template<class T>
+constexpr auto is = [](auto x) { return std::is_convertible_v<decltype(x), T>; };
+
+template<class T>
+constexpr auto is_same_with = [](auto x) { return std::is_same_v<decltype(x), T>; };
+
+
 #include <iostream>
 
 auto print(const std::string &sep = " ", std::ostream &out = std::cout) {
@@ -130,11 +223,13 @@ auto println(const std::string &sep = " ", std::ostream &out = std::cout, bool f
 
 int main() {
     auto vec = std::vector<int>{2, 1, 3};
-    auto divider = [] { std::cout << "---" << std::endl; };
+    auto trace = [](const auto &item) { std::cout << item << std::endl; };
+    auto divider = [=] { trace("---"); };
     auto doNothing = [](auto...) {};
     vec | copy | sort() | reverse | println();
-    vec | copy | sort([](auto t) { return -t; }) | println();
-    vec | copy | rsort([](auto t) { return -t; }) | println();
+    auto byMinusItem = [](auto t) { return -t; };
+    vec | copy | sort(byMinusItem) | println();
+    vec | copy | rsort(byMinusItem) | println();
     vec | copy | rsort() | println();
     vec | doNothing;
     divider();
@@ -143,27 +238,30 @@ int main() {
     opt | doNothing;
     std::optional<std::vector<int>>() | opt_fun(println());
     opt | opt_fun(sort(), println());
-    opt | opt_fun([](auto) { std::cout << "not empty\n"; }) | otherwise([] { std::cout << "empty\n"; });
-    std::optional<std::vector<int>>()
-    | opt_fun([](auto) { std::cout << "not empty\n"; })
-    | otherwise([] { std::cout << "empty\n"; });
+    auto check_if_empty = [=](auto &&opt) {
+        return opt
+               | opt_fun([=](auto) { trace("not empty"); })
+               | otherwise([=] { trace("empty"); });
+    };
+    check_if_empty(opt);
+    check_if_empty(std::optional<std::vector<int>>());
     divider();
     const std::optional<int> &null_int = std::optional<int>();
     otherwise(3); //clang compiles second one
     otherwise(3); //clang doesn't compile second one
-    std::cout << (null_int | otherwise(3)) << std::endl;
-    std::cout << (null_int
-                  | otherwise(null_int)
-                  | otherwise(3)) << std::endl;
-    std::cout << (null_int
-                  | otherwise(std::make_optional(4))
-                  | otherwise(3)) << std::endl;
-    std::cout << (null_int
-                  | otherwise([] { return std::make_optional(4); })
-                  | otherwise(3)) << std::endl;
-    std::cout << (null_int
-                  | otherwise([=] { return null_int; })
-                  | otherwise(3)) << std::endl;
+    trace(null_int | otherwise(3));
+    trace(null_int
+          | otherwise(null_int)
+          | otherwise(3));
+    trace(null_int
+          | otherwise(std::make_optional(4))
+          | otherwise(3));
+    trace(null_int
+          | otherwise([] { return std::make_optional(4); })
+          | otherwise(3));
+    trace(null_int
+          | otherwise([=] { return null_int; })
+          | otherwise(3));
     divider();
     {
         auto t = (*opt) | move;
@@ -179,9 +277,55 @@ int main() {
     }
     auto identity = [](auto &&item) { return item; };
     auto id_identity = reduce_params_types<decltype(identity)>(identity);
-    std::cout << typeid(id_identity(identity)).name() << std::endl;
+    trace(typeid(id_identity(identity)).name());
 //    id_identity(3); -> compilation error
     auto int_identity = reduce_params_types<int>(identity);
 //    int_identity(identity); -> compilation error
-    std::cout << int_identity(3) << std::endl;
+    trace(int_identity(3));
+    divider();
+    auto constantly = [](auto &&item) { return [item](auto...) { return item; }; };
+    constexpr auto falseFun = constantly(false);
+    constexpr auto trueFun = constantly(true);
+    cpair<constantly(0)>(0);
+    cpair<constantly(0), 1>(0); //bug in gcc until 9.2 (if there is no 1)
+    trace(cond(
+            falseFun, 0,
+            trueFun, 2,
+            else_return, 3));
+    trace(constexpr_cond(cpair<falseFun>(0),
+                         cpair<trueFun>("hh1")));
+    trace(constexpr_cond(cpair<falseFun>(0),
+                         cpair<falseFun>("hh1"),
+                         else_return, 2ull));
+    divider();
+    trace(select(4,
+                 4, 6,
+                 else_return, 3));
+    trace(select(5,
+                 4, 6,
+                 6, 7,
+                 else_return, 3));
+    trace(constexpr_select<4>(cpair<4>(6)));
+    trace(constexpr_select<5>(cpair<4>('a'),
+                              cpair<6>("b"),
+                              else_return, 3));
+    divider();
+    trace(all(trueFun, trueFun)(3, 5));
+    trace(all(trueFun, identity)(false));
+    trace(any(falseFun, falseFun)(3, 5));
+    trace(any(falseFun, identity)(true));
+    trace(not_all(trueFun, trueFun)(3, 5));
+    trace(not_all(trueFun, identity)(false));
+    trace(none(falseFun, falseFun)(3, 5));
+    trace(none(falseFun, identity)(true));
+    divider();
+    trace(is_same_with<int>(3));
+    trace(is_same_with<int &&>(3));
+    trace(is<int>(3));
+    trace(is<int &&>(3));
+    trace(is<int *>(static_cast<void *>(nullptr)));
+    trace(is<void *>(static_cast<int *>(nullptr)));
+    constexpr int *some_value = nullptr;
+    trace(constexpr_cond(cpair<constantly(is<int>(some_value))>('a'),
+                         cpair<constantly(is<void *>(some_value))>("b")));
 }
