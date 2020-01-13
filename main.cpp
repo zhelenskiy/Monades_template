@@ -13,17 +13,42 @@ constexpr decltype(auto) operator|(const T &operand, F &&functor) {
     return functor(operand);
 }
 
+struct void_tag {
+};
+
 template<class... Fs>
 constexpr auto opt_fun(Fs &&... functors) {
     return [functors...](auto &&arg) {
         using Arg = decltype(arg);
         using R = decltype((*std::forward<Arg>(arg) | ... | functors));
         if constexpr (std::is_void_v<R>) {
-            if (arg) {
-                (*std::forward<Arg>(arg) | ... | functors);
-            }
+            return arg ? ((*std::forward<Arg>(arg) | ... | functors), void_tag()) : std::optional<void_tag>();
         } else {
             return arg ? (*std::forward<Arg>(arg) | ... | functors) : std::optional<R>();
+        }
+    };
+}
+
+template<class T, class S, class = int>
+struct has_common_type : std::false_type {
+};
+
+template<class T, class S>
+struct has_common_type<T, S, decltype(std::declval<std::common_type_t<T, S>>(), 0)> : std::true_type {
+};
+
+template<class T, class S>
+constexpr bool has_common_type_v = has_common_type<T, S>::value;
+
+template<class S>
+constexpr auto otherwise(S &&other) {
+    return [other](auto &&opt) {
+        if constexpr (has_common_type_v<decltype(opt), S>) {
+            return opt ? *opt : other;
+        } else if constexpr (std::is_void_v<decltype(other())>) {
+            return opt ? *opt : (other(), void_tag());
+        } else {
+            return opt ? *opt : other();
         }
     };
 }
@@ -118,10 +143,27 @@ int main() {
     opt | doNothing;
     std::optional<std::vector<int>>() | opt_fun(println());
     opt | opt_fun(sort(), println());
-    opt | opt_fun([](auto x) { return (std::cout << "not empty\n", x); }) || (std::cout << "empty\n");
+    opt | opt_fun([](auto) { std::cout << "not empty\n"; }) | otherwise([] { std::cout << "empty\n"; });
     std::optional<std::vector<int>>()
-    | opt_fun([](auto x) { return (std::cout << "not empty\n", x); })
-    || (std::cout << "empty\n");
+    | opt_fun([](auto) { std::cout << "not empty\n"; })
+    | otherwise([] { std::cout << "empty\n"; });
+    divider();
+    const std::optional<int> &null_int = std::optional<int>();
+    otherwise(3); //clang compiles second one
+    otherwise(3); //clang doesn't compile second one
+    std::cout << (null_int | otherwise(3)) << std::endl;
+    std::cout << (null_int
+                  | otherwise(null_int)
+                  | otherwise(3)) << std::endl;
+    std::cout << (null_int
+                  | otherwise(std::make_optional(4))
+                  | otherwise(3)) << std::endl;
+    std::cout << (null_int
+                  | otherwise([] { return std::make_optional(4); })
+                  | otherwise(3)) << std::endl;
+    std::cout << (null_int
+                  | otherwise([=] { return null_int; })
+                  | otherwise(3)) << std::endl;
     divider();
     {
         auto t = (*opt) | move;
