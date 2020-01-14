@@ -74,6 +74,33 @@ struct identity_t {
     constexpr static decltype(Arg) value_v = Arg;
 };
 
+template<class F, class... FirstArgs>
+struct partial_v_t {
+    template<class... OtherArgs>
+    constexpr static decltype(F::template value_t<FirstArgs..., OtherArgs...>)
+            value_t = F::template value_t<FirstArgs..., OtherArgs...>;
+};
+
+template<class F, auto... FirstArgs>
+struct partial_v_v {
+    template<auto... OtherArgs>
+    constexpr static decltype(F::template value_v<FirstArgs..., OtherArgs...>)
+            value_v = F::template value_v<FirstArgs..., OtherArgs...>;
+};
+
+template<class F, class... FirstArgs>
+struct partial_t_t {
+    template<class... OtherArgs>
+    using type_t = typename F::template type_t<FirstArgs..., OtherArgs...>;
+};
+
+
+template<class F, auto... FirstArgs>
+struct partial_t_v {
+    template<auto... OtherArgs>
+    using type_v = typename F::template type_v<FirstArgs..., OtherArgs...>;
+};
+
 template<class T>
 struct is_t {
     template<class S>
@@ -117,6 +144,10 @@ constexpr auto constantly = [](auto &&item) {
 };
 
 constexpr auto identity = [](auto &&item) { return item; };
+
+constexpr auto partial = [](auto &&f, auto &&... first) {
+    return [f, first...](auto &&... other) { return f(first..., other...); };
+};
 
 template<class T>
 constexpr auto is = [](auto x) { return is_t<T>::template value_t<decltype(x)>; };
@@ -193,6 +224,7 @@ template<class... Params, class F>
 constexpr auto reduce_params_types(F &&functor) {
     return [functor](Params... params) { return functor(std::forward<Params>(params)...); };
 }
+
 
 struct else_return_t {
     constexpr bool operator()() const { return true; }
@@ -499,4 +531,15 @@ int main() {
             is_t<char *>(), '5',
             else_return, "6"
     ));
+    big_divider();
+    auto selector = [](auto &&... args) { return select(args...); };
+    auto select5 = partial(selector, 5);
+    trace(select5(
+            4, 3,
+            5, 6,
+            else_return, 7));
+    trace(partial_v_v<constantly_v<3>, 5>::value_v<6>);
+    trace(partial_t_v<constantly_t<int>, 5>::type_v<6>());
+    trace(partial_v_t<constantly_v<3>, int>::value_t<long>);
+    trace(partial_t_t<constantly_t<int>, int>::type_t<long>());
 }
