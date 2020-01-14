@@ -68,6 +68,7 @@ constexpr auto reduce_params_types(F &&functor) {
 }
 
 struct else_return_t {
+    constexpr bool operator()() const { return true; }
 } else_return;
 
 template<class F, class V, class = std::enable_if_t<!std::is_same_v<F, else_return_t>>, class... Other>
@@ -80,33 +81,46 @@ constexpr auto cond(else_return_t, V &&v) {
     return v;
 }
 
-template<auto F, class T, size_t>
-struct cpair_t {
-    T value;
-
-    explicit cpair_t(T value) : value(std::move(value)) {}
+constexpr auto constexpr_cond = [](auto... other) {
+    constexpr auto impl = [](auto recur, auto f, auto v, auto... other) {
+        if constexpr (std::is_convertible_v<decltype(f), else_return_t>) {
+            return v;
+        } else if constexpr (f()) {
+            return v;
+        } else {
+            return recur(recur, other...);
+        }
+    };
+    return impl(impl, other...);
 };
 
+template<auto... items>
+constexpr auto constexpr_cond_args = [](auto... other) {
+    constexpr auto impl = [](auto recur, auto f, auto v, auto... other) {
+        if constexpr (std::is_convertible_v<decltype(f), else_return_t>) {
+            return v;
+        } else if constexpr (f(items...)) {
+            return v;
+        } else {
+            return recur(recur, other...);
+        }
+    };
+    return impl(impl, other...);
+};
 
-template<auto F, size_t ind = 0, class T>
-constexpr auto cpair(T &&item) {
-    return cpair_t<F, T, ind>(item);
-}
-
-
-template<auto F, class V, size_t ind, class = std::enable_if_t<!std::is_same_v<decltype(F), else_return_t>>, class... Other>
-constexpr auto constexpr_cond(const cpair_t<F, V, ind> &value, Other &&... others) {
-    if constexpr (F()) {
-        return value.value;
-    } else {
-        return constexpr_cond(std::forward<Other>(others)...);
-    }
-}
-
-template<class V>
-constexpr auto constexpr_cond(else_return_t, V &&f) {
-    return f;
-}
+template<class... Args>
+constexpr auto constexpr_cond_types = [](auto... other) {
+    constexpr auto impl = [](auto recur, auto f, auto v, auto... other) {
+        if constexpr (std::is_convertible_v<decltype(f), else_return_t>) {
+            return v;
+        } else if constexpr (decltype(f)::template value<Args...>) {
+            return v;
+        } else {
+            return recur(recur, other...);
+        }
+    };
+    return impl(impl, other...);
+};
 
 template<class T, class S, class = std::enable_if_t<!std::is_same_v<T, else_return_t>>, class... Other>
 constexpr auto select(const T &item, const T &cur, S &&value, const Other &... others) {
@@ -118,8 +132,21 @@ constexpr auto select(const T &, else_return_t, S &&value) {
     return value;
 }
 
-template<auto item, decltype(item) cur, size_t ind, class S, class = std::enable_if_t<!std::is_same_v<decltype(item), else_return_t>>, class... Other>
-constexpr auto constexpr_select(const cpair_t<cur, S, ind> &pair, const Other &... others) {
+template<auto F, class T>
+struct cpair_t {
+    T value;
+
+    explicit cpair_t(T value) : value(std::move(value)) {}
+};
+
+
+template<auto F, class T>
+constexpr auto k2v(T &&item) {
+    return cpair_t<F, T>(item);
+}
+
+template<auto item, decltype(item) cur, class S, class = std::enable_if_t<!std::is_same_v<decltype(item), else_return_t>>, class... Other>
+constexpr auto constexpr_select(const cpair_t<cur, S> &pair, const Other &... others) {
     if constexpr (item == cur) {
         return pair.value;
     } else {
@@ -190,6 +217,18 @@ constexpr auto is = [](auto x) { return std::is_convertible_v<decltype(x), T>; }
 
 template<class T>
 constexpr auto is_same_with = [](auto x) { return std::is_same_v<decltype(x), T>; };
+
+template<class T>
+struct is_t {
+    template<class S>
+    constexpr static bool value = std::is_convertible_v<S, T>;
+};
+
+template<class T>
+struct is_same_with_t {
+    template<class S>
+    constexpr static bool value = std::is_same_v<S, T>;
+};
 
 
 #include <iostream>
@@ -283,20 +322,20 @@ int main() {
 //    int_identity(identity); -> compilation error
     trace(int_identity(3));
     divider();
-    auto constantly = [](auto &&item) { return [item](auto...) { return item; }; };
-    constexpr auto falseFun = constantly(false);
-    constexpr auto trueFun = constantly(true);
-    cpair<constantly(0)>(0);
-    cpair<constantly(0), 1>(0); //bug in gcc until 9.2 (if there is no 1)
+//    auto constantly = [](auto &&item) { return [item](auto...) { return item; }; };
+    constexpr auto falseFun = [](auto...) { return false; };
+    constexpr auto trueFun = [](auto...) { return true; };
     trace(cond(
             falseFun, 0,
             trueFun, 2,
             else_return, 3));
-    trace(constexpr_cond(cpair<falseFun>(0),
-                         cpair<trueFun>("hh1")));
-    trace(constexpr_cond(cpair<falseFun>(0),
-                         cpair<falseFun>("hh1"),
-                         else_return, 2ull));
+    trace(constexpr_cond(
+            falseFun, 0,
+            trueFun, "hh1"));
+    trace(constexpr_cond(
+            falseFun, 0,
+            falseFun, "hh1",
+            else_return, 2ull));
     divider();
     trace(select(4,
                  4, 6,
@@ -305,10 +344,11 @@ int main() {
                  4, 6,
                  6, 7,
                  else_return, 3));
-    trace(constexpr_select<4>(cpair<4>(6)));
-    trace(constexpr_select<5>(cpair<4>('a'),
-                              cpair<6>("b"),
-                              else_return, 3));
+    trace(constexpr_select<4>(k2v<4>(6)));
+    trace(constexpr_select<5>(
+            k2v<4>('a'),
+            k2v<6>("b"),
+            else_return, 3));
     divider();
     trace(all(trueFun, trueFun)(3, 5));
     trace(all(trueFun, identity)(false));
@@ -325,7 +365,16 @@ int main() {
     trace(is<int &&>(3));
     trace(is<int *>(static_cast<void *>(nullptr)));
     trace(is<void *>(static_cast<int *>(nullptr)));
+    divider();
     constexpr int *some_value = nullptr;
-    trace(constexpr_cond(cpair<constantly(is<int>(some_value))>('a'),
-                         cpair<constantly(is<void *>(some_value))>("b")));
+    trace(constexpr_cond_args<some_value>(
+            is<int>, 'a',
+            is<void *>, "b"));
+    trace(constexpr_cond_types<float>(
+            is_t<int>(), 'a',
+            is_t<void *>(), "b"));
+    trace(constexpr_cond_types<float>(
+            is_same_with_t<int>(), 'a',
+            is_t<void *>(), "b",
+            else_return, "bebebe"));
 }
