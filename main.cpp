@@ -3,6 +3,128 @@
 #include <optional>
 #include <tuple>
 
+template<class... Fs>
+struct all_t {
+    template<class... Args>
+    constexpr static bool value_t = (Fs::template value_t<Args...> && ...);
+
+    template<auto... Args>
+    constexpr static bool value_v = (Fs::template value_v<Args...> && ...);
+};
+
+template<class... Fs>
+struct any_t {
+    template<class... Args>
+    constexpr static bool value_t = (Fs::template value_t<Args...> || ...);
+
+    template<auto... Args>
+    constexpr static bool value_v = (Fs::template value_v<Args...> || ...);
+};
+
+template<class F>
+struct not_t {
+    template<class... Args>
+    constexpr static bool value_t = !F::template value_t<Args...>;
+
+    template<auto... Args>
+    constexpr static bool value_v = !F::template value_v<Args...>;
+};
+
+template<class... Fs>
+struct not_all_t {
+    template<class... Args>
+    constexpr static bool value_t = not_t<all_t<Fs...>>::template value_t<Args...>;
+
+    template<auto... Args>
+    constexpr static bool value_v = not_t<all_t<Fs...>>::template value_v<Args...>;
+};
+
+template<class... Fs>
+struct none_t {
+    template<class... Args>
+    constexpr static bool value_t = not_t<any_t<Fs...>>::template value_t<Args...>;
+
+    template<auto... Args>
+    constexpr static bool value_v = not_t<any_t<Fs...>>::template value_v<Args...>;
+};
+
+template<auto item>
+struct constantly_v {
+    template<class... Args>
+    constexpr static decltype(item) value_t = item;
+
+    template<auto... Args>
+    constexpr static decltype(item) value_v = item;
+};
+
+template<class T>
+struct constantly_t {
+    template<class... Args>
+    using type_t = T;
+
+    template<auto... Args>
+    using type_v = T;
+};
+
+struct identity_t {
+    template<class Arg>
+    using type_t = Arg;
+
+    template<auto Arg>
+    constexpr static decltype(Arg) value_v = Arg;
+};
+
+template<class T>
+struct is_t {
+    template<class S>
+    constexpr static bool value_t = std::is_assignable_v<T &, S>;
+
+    template<auto item>
+    constexpr static bool value_v = value_t<decltype(item)>;
+};
+
+template<class T>
+struct is_same_with_t {
+    template<class S>
+    constexpr static bool value_t = std::is_same_v<S, T>;
+
+    template<auto item>
+    constexpr static bool value_v = value_t<decltype(item)>;
+};
+
+constexpr auto all = [](auto &&...args) {
+    return [=](const auto &... subArgs) { return (args(subArgs...) && ...); };
+};
+
+constexpr auto any = [](auto &&...args) {
+    return [=](const auto &... subArgs) { return (args(subArgs...) || ...); };
+};
+
+constexpr auto not_ = [](auto &&f) {
+    return [f](auto &&... items) { return !f(std::forward<decltype(items)>(items)...); };
+};
+
+constexpr auto not_all = [](auto &&... fs) {
+    return not_(all(std::forward<decltype(fs)>(fs)...));
+};
+
+constexpr auto none = [](auto &&... fs) {
+    return not_(any(std::forward<decltype(fs)>(fs)...));
+};
+
+constexpr auto constantly = [](auto &&item) {
+    return [item](const auto &&...) { return item; };
+};
+
+constexpr auto identity = [](auto &&item) { return item; };
+
+template<class T>
+constexpr auto is = [](auto x) { return is_t<T>::template value_t<decltype(x)>; };
+
+template<class T>
+constexpr auto is_same_with = [](auto x) { return is_same_with_t<T>::template value_t<decltype(x)>; };
+
+
 template<class T, class F, class = std::enable_if_t<std::is_invocable_v<F, T>>>
 constexpr decltype(auto) operator|(T &&operand, F &&functor) {
     return functor(std::forward<T>(operand));
@@ -45,13 +167,18 @@ constexpr auto otherwise(S &&other) {
     return [other](auto &&opt) {
         if constexpr (has_common_type_v<decltype(opt), S>) {
             return opt ? *opt : other;
-        } else if constexpr (std::is_void_v<decltype(other())>) {
-            return opt ? *opt : (other(), void_tag());
+        } else if constexpr (std::is_invocable_v<decltype(other)>) {
+            if constexpr (std::is_void_v<decltype(other())>) {
+                return opt ? *opt : (other(), void_tag());
+            } else {
+                return opt ? *opt : other();
+            }
         } else {
-            return opt ? *opt : other();
+            static_assert(constantly_v<false>::value_t<S, decltype(opt)>, "There is no handler for the types.");
         }
     };
 }
+
 
 template<class... Fs>
 constexpr auto tup_fun(Fs &&... functors) {
@@ -95,7 +222,7 @@ constexpr auto constexpr_cond = [](auto... other) {
 };
 
 template<auto... items>
-constexpr auto constexpr_cond_args = [](auto... other) {
+constexpr auto constexpr_cond_v = [](auto... other) {
     constexpr auto impl = [](auto recur, auto f, auto v, auto... other) {
         if constexpr (std::is_convertible_v<decltype(f), else_return_t>) {
             return v;
@@ -109,11 +236,11 @@ constexpr auto constexpr_cond_args = [](auto... other) {
 };
 
 template<class... Args>
-constexpr auto constexpr_cond_types = [](auto... other) {
+constexpr auto constexpr_cond_t = [](auto... other) {
     constexpr auto impl = [](auto recur, auto f, auto v, auto... other) {
         if constexpr (std::is_convertible_v<decltype(f), else_return_t>) {
             return v;
-        } else if constexpr (decltype(f)::template value<Args...>) {
+        } else if constexpr (decltype(f)::template value_t<Args...>) {
             return v;
         } else {
             return recur(recur, other...);
@@ -133,20 +260,20 @@ constexpr auto select(const T &, else_return_t, S &&value) {
 }
 
 template<auto F, class T>
-struct cpair_t {
+struct k2v_t {
     T value;
 
-    explicit cpair_t(T value) : value(std::move(value)) {}
+    explicit k2v_t(T value) : value(std::move(value)) {}
 };
 
 
 template<auto F, class T>
 constexpr auto k2v(T &&item) {
-    return cpair_t<F, T>(item);
+    return k2v_t<F, T>(item);
 }
 
 template<auto item, decltype(item) cur, class S, class = std::enable_if_t<!std::is_same_v<decltype(item), else_return_t>>, class... Other>
-constexpr auto constexpr_select(const cpair_t<cur, S> &pair, const Other &... others) {
+constexpr auto constexpr_select(const k2v_t<cur, S> &pair, const Other &... others) {
     if constexpr (item == cur) {
         return pair.value;
     } else {
@@ -192,44 +319,6 @@ constexpr auto rsort(Args &&... args) {
     };
 }
 
-constexpr auto all = [](auto &&...args) {
-    return [=](const auto &... subArgs) { return (args(subArgs...) && ...); };
-};
-
-constexpr auto any = [](auto &&...args) {
-    return [=](const auto &... subArgs) { return (args(subArgs...) || ...); };
-};
-
-constexpr auto not_ = [](auto &&f) {
-    return [f](auto &&... items) { return !f(std::forward<decltype(items)>(items)...); };
-};
-
-constexpr auto not_all = [](auto &&... fs) {
-    return not_(all(std::forward<decltype(fs)>(fs)...));
-};
-
-constexpr auto none = [](auto &&... fs) {
-    return not_(any(std::forward<decltype(fs)>(fs)...));
-};
-
-template<class T>
-constexpr auto is = [](auto x) { return std::is_convertible_v<decltype(x), T>; };
-
-template<class T>
-constexpr auto is_same_with = [](auto x) { return std::is_same_v<decltype(x), T>; };
-
-template<class T>
-struct is_t {
-    template<class S>
-    constexpr static bool value = std::is_convertible_v<S, T>;
-};
-
-template<class T>
-struct is_same_with_t {
-    template<class S>
-    constexpr static bool value = std::is_same_v<S, T>;
-};
-
 
 #include <iostream>
 
@@ -264,17 +353,18 @@ int main() {
     auto vec = std::vector<int>{2, 1, 3};
     auto trace = [](const auto &item) { std::cout << item << std::endl; };
     auto divider = [=] { trace("---"); };
-    auto doNothing = [](auto...) {};
+    auto big_divider = [=] { trace("====="); };
+    auto do_nothing = [](auto...) {};
     vec | copy | sort() | reverse | println();
     auto byMinusItem = [](auto t) { return -t; };
     vec | copy | sort(byMinusItem) | println();
     vec | copy | rsort(byMinusItem) | println();
     vec | copy | rsort() | println();
-    vec | doNothing;
+    vec | do_nothing;
     divider();
     auto opt = std::make_optional(vec);
     opt | opt_fun(println());
-    opt | doNothing;
+    opt | do_nothing;
     std::optional<std::vector<int>>() | opt_fun(println());
     opt | opt_fun(sort(), println());
     auto check_if_empty = [=](auto &&opt) {
@@ -314,15 +404,13 @@ int main() {
         std::pair{*opt, t} | tup_fun(println());
         divider();
     }
-    auto identity = [](auto &&item) { return item; };
     auto id_identity = reduce_params_types<decltype(identity)>(identity);
     trace(typeid(id_identity(identity)).name());
 //    id_identity(3); -> compilation error
     auto int_identity = reduce_params_types<int>(identity);
 //    int_identity(identity); -> compilation error
     trace(int_identity(3));
-    divider();
-//    auto constantly = [](auto &&item) { return [item](auto...) { return item; }; };
+    big_divider();
     constexpr auto falseFun = [](auto...) { return false; };
     constexpr auto trueFun = [](auto...) { return true; };
     trace(cond(
@@ -349,7 +437,7 @@ int main() {
             k2v<4>('a'),
             k2v<6>("b"),
             else_return, 3));
-    divider();
+    big_divider();
     trace(all(trueFun, trueFun)(3, 5));
     trace(all(trueFun, identity)(false));
     trace(any(falseFun, falseFun)(3, 5));
@@ -367,14 +455,48 @@ int main() {
     trace(is<void *>(static_cast<int *>(nullptr)));
     divider();
     constexpr int *some_value = nullptr;
-    trace(constexpr_cond_args<some_value>(
+    trace(constexpr_cond_v<some_value>(
             is<int>, 'a',
             is<void *>, "b"));
-    trace(constexpr_cond_types<float>(
+    trace(constexpr_cond_t<float>(
             is_t<int>(), 'a',
             is_t<void *>(), "b"));
-    trace(constexpr_cond_types<float>(
+    trace(constexpr_cond_t<float>(
             is_same_with_t<int>(), 'a',
             is_t<void *>(), "b",
             else_return, "bebebe"));
+    big_divider();
+    trace(all_t<is_t<int>, is_t<long>>::value_v<3>);
+    trace(all_t<is_same_with_t<int>, is_t<long>>::value_v<3u>);
+    trace(all_t<is_same_with_t<int>, is_same_with_t<long>>::value_v<3u>);
+    divider();
+    trace(all_t<is_t<int>, is_t<long>>::value_t<int>);
+    trace(all_t<is_same_with_t<int>, is_t<long>>::value_t<unsigned>);
+    trace(all_t<is_same_with_t<int>, is_same_with_t<long>>::value_t<unsigned>);
+    divider();
+    trace(any_t<is_t<int>, is_t<long>>::value_v<3>);
+    trace(any_t<is_same_with_t<int>, is_t<long>>::value_v<3u>);
+    trace(any_t<is_same_with_t<int>, is_same_with_t<long>>::value_v<3u>);
+    divider();
+    trace(none_t<is_t<int>, is_t<long>>::value_t<int>);
+    trace(none_t<is_same_with_t<int>, is_t<long>>::value_t<unsigned>);
+    trace(none_t<is_same_with_t<int>, is_same_with_t<long>>::value_t<unsigned>);
+    divider();
+    trace(not_all_t<is_t<int>, is_t<long>>::value_v<3>);
+    trace(not_all_t<is_same_with_t<int>, is_t<long>>::value_v<3u>);
+    trace(not_all_t<is_same_with_t<int>, is_same_with_t<long>>::value_v<3u>);
+    big_divider();
+    trace(identity_t::value_v<3>);
+    trace(identity_t::type_t<int>());
+    divider();
+    trace(constantly_v<3>::value_v<22, false>);
+    trace(constantly_v<3>::value_t<int, long>);
+    trace(constantly_t<int>::type_v<22, false>());
+    trace(constantly_t<int>::type_t<int, long>());
+    big_divider();
+    trace(constexpr_cond_t<int>(
+            all_t<is_t<int>, constantly_v<false>>(), 4,
+            is_t<char *>(), '5',
+            else_return, "6"
+    ));
 }
