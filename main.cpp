@@ -101,22 +101,60 @@ struct partial_t_v {
     using type_v = typename F::template type_v<FirstArgs..., OtherArgs...>;
 };
 
-template<class T>
-struct is_t {
-    template<class S>
-    constexpr static bool value_t = std::is_assignable_v<T &, S>;
+template<template<class...> class F>
+struct from_non_template_v_t {
+    template<class... Args>
+    constexpr static decltype(F<Args...>::value) value_t = F<Args...>::value;
+};
 
-    template<auto item>
-    constexpr static bool value_v = value_t<decltype(item)>;
+template<template<auto...> class F>
+struct from_non_template_v_v {
+    template<auto... Args>
+    constexpr static decltype(F<Args...>::value) value_v = F<Args...>::value;
+};
+
+template<template<class...> class F>
+struct from_non_template_t_t {
+    template<class... Args>
+    using type_t = typename F<Args...>::type;
+};
+
+template<template<auto...> class F>
+struct from_non_template_t_v {
+    template<auto... Args>
+    using type_v = typename F<Args...>::type;
+};
+
+template<class F, class... Args>
+struct to_non_template_v_t {
+    constexpr static decltype(F::template value_t<Args...>) value = F::template value_t<Args...>;
+};
+
+template<class F, auto... Args>
+struct to_non_template_v_v {
+    constexpr static decltype(F::template value_v<Args...>) value = F::template value_v<Args...>;
+};
+
+template<class F, class... Args>
+struct to_non_template_t_t {
+    using type = typename F::template type_t<Args...>;
+};
+
+template<class F, auto... Args>
+struct to_non_template_t_v {
+    using type = typename F::template type_v<Args...>;
 };
 
 template<class T>
-struct is_same_with_t {
-    template<class S>
-    constexpr static bool value_t = std::is_same_v<S, T>;
-
+struct is_t : partial_v_t<from_non_template_v_t<std::is_assignable>, T &> {
     template<auto item>
-    constexpr static bool value_v = value_t<decltype(item)>;
+    constexpr static bool value_v = is_t<T>::template value_t<decltype(item)>;
+};
+
+template<class T>
+struct is_same_with_t : partial_v_t<from_non_template_v_t<std::is_same>, T> {
+    template<auto item>
+    constexpr static bool value_v = is_same_with_t<T>::template value_t<decltype(item)>;
 };
 
 constexpr auto all = [](auto &&...args) {
@@ -379,6 +417,34 @@ auto println(const std::string &sep = " ", std::ostream &out = std::cout, bool f
     };
 }
 
+template<auto a, auto... other>
+struct min {
+    constexpr static std::common_type_t<decltype(a), decltype(other)...> value =
+            a < min<other...>::value ? a : min<other...>::value;
+};
+
+template<auto a>
+struct min<a> {
+    constexpr static decltype(a) value = a;
+};
+
+template<auto a, auto... other>
+struct max {
+    constexpr static std::common_type_t<decltype(a), decltype(other)...> value =
+            a > max<other...>::value ? a : max<other...>::value;
+};
+
+template<auto a>
+struct max<a> {
+    constexpr static decltype(a) value = a;
+};
+
+template<auto item>
+struct struct_for {
+    using type = decltype(item);
+    constexpr static type value = item;
+};
+
 #include <vector>
 
 int main() {
@@ -408,8 +474,6 @@ int main() {
     check_if_empty(std::optional<std::vector<int>>());
     divider();
     const std::optional<int> &null_int = std::optional<int>();
-    otherwise(3); //clang compiles second one
-    otherwise(3); //clang doesn't compile second one
     trace(null_int | otherwise(3));
     trace(null_int
           | otherwise(null_int)
@@ -423,7 +487,9 @@ int main() {
     trace(null_int
           | otherwise([=] { return null_int; })
           | otherwise(3));
-    divider();
+    trace(null_int
+          | otherwise([=] { return 4; }));
+    big_divider();
     {
         auto t = (*opt) | move;
         t | println();
@@ -433,7 +499,7 @@ int main() {
         t | println();
         *opt | println();
         divider();
-        std::pair{*opt, t} | tup_fun(println());
+        std::pair{t, *opt} | tup_fun(println());
         divider();
     }
     auto id_identity = reduce_params_types<decltype(identity)>(identity);
@@ -480,7 +546,9 @@ int main() {
     trace(none(falseFun, identity)(true));
     divider();
     trace(is_same_with<int>(3));
+    trace(is_same_with_t<int>::value_v<3>);
     trace(is_same_with<int &&>(3));
+    trace(is_t<int>::value_v<3>);
     trace(is<int>(3));
     trace(is<int &&>(3));
     trace(is<int *>(static_cast<void *>(nullptr)));
@@ -542,4 +610,16 @@ int main() {
     trace(partial_t_v<constantly_t<int>, 5>::type_v<6>());
     trace(partial_v_t<constantly_v<3>, int>::value_t<long>);
     trace(partial_t_t<constantly_t<int>, int>::type_t<long>());
+    divider();
+    trace(from_non_template_v_t<std::is_same>::value_t<int, int>);
+    trace(from_non_template_t_t<std::common_type>::type_t<int, unsigned long>());
+    trace(from_non_template_v_v<min>::value_v<4, 5, 3>);
+    trace(from_non_template_v_v<max>::value_v<4, 5, 3>);
+    trace(from_non_template_t_v<struct_for>::type_v<4>());
+    divider();
+    trace(to_non_template_v_t<from_non_template_v_t<std::is_same>, int, int>::value);
+    trace(to_non_template_t_t<from_non_template_t_t<std::common_type>, int, unsigned long>::type());
+    trace(to_non_template_v_v<from_non_template_v_v<min>, 4, 5, 3>::value);
+    trace(to_non_template_v_v<from_non_template_v_v<max>, 4, 5, 3>::value);
+    trace(to_non_template_t_v<from_non_template_t_v<struct_for>, 4>::type());
 }
